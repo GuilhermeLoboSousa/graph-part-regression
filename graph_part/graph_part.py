@@ -455,15 +455,7 @@ def removal_needed(
     full_graph: nx.classes.graph.Graph,
     threshold: float) -> bool:
     """ """
-    min_between = float('Inf')
-    for qry, lib, fed in full_graph.edges(data=True):
-        if part_graph.nodes[qry]['cluster'] != part_graph.nodes[lib]['cluster']:
-            if fed['metric'] < min_between:
-                min_between = fed['metric']
-            if min_between < threshold:
-                print ("! ", qry, lib, fed, " !")
-                return True
-    return False
+    return True
 
 
 def make_graphs_from_sequences(config: Dict[str, Any], threshold: float, json_dict: Dict[str,Any], verbose: bool = True) -> Tuple[nx.classes.graph.Graph, nx.classes.graph.Graph, dict]:
