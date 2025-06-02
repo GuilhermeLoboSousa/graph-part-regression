@@ -28,25 +28,52 @@ def check_train_val_test_args(args):
         setattr(args, 'test_ratio', args.val_ratio)
         setattr(args, 'val_ratio', 0.0)
     
+
+def compute_partition_matrix_similar_sequences(full_graph: nx.classes.graph.Graph, part_graph: nx.classes.graph.Graph, n_partitions: int, threshold: float) -> np.ndarray:
+    '''
+    Compute a matrix of the partitions, evaluating which partitions contain more similar sequences.
+    Goal: Ensure that when comparing the partitions, the similarity between sequences is lower (to avoid bias).
+    Args:
+        full_graph (nx.Graph): The full graph containing sequences and their connections.
+        part_graph (nx.Graph): The partition graph containing the clusters of sequences, is like groups of similar sequences.
+        n_partitions (int): Total number of partitions.
+        threshold (float): Threshold to define connections based on 'metric' attribute.
+    '''
     
-    
+    partition_connections_similar_sequences = np.zeros((n_partitions, n_partitions)) # matrix form nº partitions vs nº partitions
+    cluster_sizes = Counter(part_graph.nodes[n]['cluster'] for n in full_graph.nodes())
+    for n, d in full_graph.nodes(data=True): # n is the node, d is the data associated with the node
+        # get the partition of the current(n) node 
+        self_cluster = part_graph.nodes[n]['cluster'] 
+        # get the neighbors of the current(n) node
+        neighbours = nx.neighbors(full_graph, n)
+        # full_graph[n][nb]['metric'] is the metric of the edge between the current node and the neighbor node
+        # only nodes with connection with neighbors with metric < threshold are considered and counted; only are considered sequences that are different
+        neighbour_clusters = Counter((part_graph.nodes[nb]['cluster'] for nb in neighbours if full_graph[n][nb]['metric'] < threshold))
+        # so the real matrix is the number of connections between each partition
+        for cl, count in neighbour_clusters.items(): # cl and count are the cluster/partition and the number of connections between the current node and the neighbor node
+            partition_connections_similar_sequences[int(self_cluster), int(cl)] += count / (cluster_sizes[self_cluster] * cluster_sizes[cl])#normalized by the size of the clusters
+    return partition_connections_similar_sequences # count of connections between partitions that are really similar in sequences
 
-def compute_partition_similarity_matrix(full_graph: nx.classes.graph.Graph, part_graph: nx.classes.graph.Graph, n_partitions: int, threshold: float) -> np.ndarray:
-    '''Compute a similarity matrix of the partitions. Metric = number of connections between.'''
-    partition_connections = np.zeros((n_partitions, n_partitions))
-    #iterate over all sequences
-    for n,d in full_graph.nodes(data=True):
-        # get the partition of the sequence 
-        self_cluster = part_graph.nodes[n]['cluster']
-        #get the neighbors of the sequence
-        neighbours = nx.neighbors(full_graph,n) 
-        #count the number of neighbors of each partition
-        neighbour_clusters = Counter((part_graph.nodes[nb]['cluster'] for nb in nx.neighbors(full_graph,n) if full_graph[n][nb]['metric'] < threshold))
-
-        for cl, count in neighbour_clusters.items():
-            partition_connections[int(self_cluster), int(cl)] += count #Partition id ['cluster'] is float.
-
-    return partition_connections
+def compute_partition_matrix_different_sequences(full_graph: nx.classes.graph.Graph, part_graph: nx.classes.graph.Graph, n_partitions: int, threshold: float) -> np.ndarray:
+    '''
+    Compute a matrix of the partitions, evaluating which partitions contain more distinct sequences.
+    Goal: Ensure that each set/group of partitionis includes sequences with some level of diversity.
+    Args:
+        full_graph (nx.Graph): The full graph containing sequences and their connections.
+        part_graph (nx.Graph): The partition graph containing the clusters of sequences.
+        n_partitions (int): Total number of partitions.
+        threshold (float): Threshold to define connections based on 'metric' attribute.
+    '''
+    partition_connections_different_sequences = np.zeros((n_partitions, n_partitions)) 
+    cluster_sizes = Counter(part_graph.nodes[n]['cluster'] for n in full_graph.nodes())
+    for n, d in full_graph.nodes(data=True): 
+        self_cluster = part_graph.nodes[n]['cluster'] 
+        neighbours = nx.neighbors(full_graph, n)
+        neighbour_clusters = Counter((part_graph.nodes[nb]['cluster'] for nb in neighbours if full_graph[n][nb]['metric'] >= threshold))
+        for cl, count in neighbour_clusters.items(): 
+            partition_connections_different_sequences[int(self_cluster), int(cl)] += count / (cluster_sizes[self_cluster] * cluster_sizes[cl])
+    return partition_connections_different_sequences
 
 def find_best_partition_combinations(partition_connections: np.ndarray, n_train: int, n_test: int) -> Tuple[List[int], List[int], List[int]]:
     '''
