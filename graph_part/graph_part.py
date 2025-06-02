@@ -14,6 +14,10 @@ from tqdm import tqdm
 from .transformations import TRANSFORMATIONS
 from .train_val_test_split import train_val_test_split
 
+from .needle_utils import get_len_dict, parse_fasta
+import sys
+sys.stdout.flush()
+
 """
 This program partitions an entity set according to a single pairwise distance metric
 and some desired threshold the partitions should fullfill.
@@ -45,7 +49,7 @@ def process_csv(line: str) -> Tuple[str, dict]:
     raise NotImplementedError('Graph-Part does not support starting from .csv yet.')
     yield None, None
 
-def process_fasta(line: str, priority_name:str, labels_name:str, labels: dict) -> Tuple[str, dict]:
+def process_fasta(line: str, priority_name:str, labels_name:str, labels: dict, seq_lens:dict) -> Tuple[str, dict]:
     """ Processes a fasta header lines or fasta meta data lines, if you will.
         Only supports interleaved fasta with > initialized header lines.
         Separate metadata with pipes | or colons :, whitespace between separators are ignored. 
@@ -79,7 +83,8 @@ def process_fasta(line: str, priority_name:str, labels_name:str, labels: dict) -
 
     node_data = {
         'priority': priority,
-        'label-val': label
+        'label-val': label,
+        'length': seq_lens.get(AC, 0),
     }
     return AC, node_data
 
@@ -89,11 +94,14 @@ def load_entities(entity_fp: str, priority_name: str, labels_name: str):
     full_graph = nx.Graph()
 
     labels = {}
+    ids,seqs=parse_fasta(entity_fp)
+    seq_lens = get_len_dict(ids,seqs)
+
     with open(entity_fp) as inf:
         processing_as = None
         for line in inf:
             if '>' in line and processing_as != 'csv':
-                AC, node_data = process_fasta(line, priority_name, labels_name, labels)
+                AC, node_data = process_fasta(line, priority_name, labels_name, labels,seq_lens)
                 processing_as = 'fasta'
             elif processing_as == 'fasta':
                 continue
