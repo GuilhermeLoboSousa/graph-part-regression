@@ -158,52 +158,62 @@ def find_best_partition_combinations(partition_connections_similar_sequences: np
 
 
 def train_val_test_split(part_graph: nx.classes.graph.Graph, 
-                     full_graph: nx.classes.graph.Graph, 
-                     threshold: float, 
-                     test_ratio: float,
-                     val_ratio: float, 
-                     n_partitions: int = 10) -> None:
-    '''
-    Merge pre-removal partitions to generate a train-val-test split.
-    '''
-    n_train = int(round(n_partitions * (1-val_ratio-test_ratio))) # has a .999999999 float issue without rounding.
+                         full_graph: nx.classes.graph.Graph, 
+                         threshold: float, 
+                         test_ratio: float,
+                         val_ratio: float, 
+                         n_partitions: int = 10) -> None:
+    """
+    Splits the graph into train, test, and validation sets, ensuring balance in class distribution and minimizing bias.
+    
+    Args:
+        part_graph (nx.Graph): The partition graph containing the clusters of sequences.
+        full_graph (nx.Graph): The full graph containing sequences and their connections.
+        threshold (float): Threshold to define connections based on 'metric' attribute.
+        test_ratio (float): Ratio of partitions for the test set.
+        val_ratio (float): Ratio of partitions for the validation set.
+        n_partitions (int): Total number of partitions.
+    """
+    # Step 1: Compute the number of partitions for each set.
+    n_train = int(round(n_partitions * (1 - val_ratio - test_ratio)))  
     n_test = int(n_partitions * test_ratio)
     n_val = int(n_partitions * val_ratio)
-
-    # For each partition, measure the overlap to other partitions.
-    # partition_connections is essentially a similarity matrix of all the partitions.
-    partition_connections = compute_partition_similarity_matrix(full_graph, part_graph, n_partitions, threshold)
-
-    # Given the similarity matrix, find the combinations with maximum overlap.
-    # By doing this now, we reduce the number of move/removal operations later.
-    train_partitions, test_partitions, val_partitions = find_best_partition_combinations(partition_connections, n_train, n_test)
-    # Given the new assignments, update the graph.
-    # part_graph has the following format: {'C0IW58': {'cluster': 0.0, 'C-size': 124, 'label-counts': array([92, 32])}
-
-    # Compute the new statistics to add to the nodes.
-    df = pd.DataFrame(((d) for n,d in full_graph.nodes(data=True)))
+    # Step 2: Compute the similarity matrix between partitions.
+    partition_connections = compute_partition_matrix_similar_sequences(full_graph, part_graph, n_partitions, threshold)
+    partition_connections_different_sequences = compute_partition_matrix_different_sequences(full_graph, part_graph, n_partitions, threshold)
+    
+    
+    # Step 3: Compute the label distribution (label_counts) for each partition.
+    # Create a DataFrame with cluster and label information for all nodes.
+    df = pd.DataFrame(((d) for n, d in full_graph.nodes(data=True)))
     df['cluster'] = [part_graph.nodes[n]['cluster'] for n in full_graph.nodes()]
     df['AC'] = [n for n in full_graph.nodes()]
-    df = df.groupby(['cluster','label-val'])['AC'].count().reset_index().pivot_table(values='AC',columns=['label-val'],index=['cluster'])
 
-    train_statistics = df.loc[[float(x) for x in train_partitions]].sum(axis=0)
-    train_attributes = {'cluster': 0.0, 'C-size': sum(train_statistics), 'label-counts': train_statistics.to_numpy()}
-    test_statistics = df.loc[[float(x) for x in test_partitions]].sum(axis=0)
-    test_attributes = {'cluster': 1.0, 'C-size': sum(test_statistics), 'label-counts': test_statistics.to_numpy()}
-    val_statistics = df.loc[[float(x) for x in val_partitions]].sum(axis=0)
-    val_attributes = {'cluster': 2.0, 'C-size': sum(val_statistics), 'label-counts': val_statistics.to_numpy()}
+    # Group by cluster and label value to count occurrences of each label in each partition.
+    df_label_counts = df.groupby(['cluster', 'label-val'])['AC'].count().reset_index()
+    label_counts = df_label_counts.pivot_table(values='AC', columns=['label-val'], index=['cluster'], fill_value=0).to_numpy() #matrix with the number of each label in each partition
+    
+    # Step 4: Find the best combinations for train, test, and validation sets.
+    train_partitions, test_partitions, val_partitions = find_best_partition_combinations(
+        partition_connections, partition_connections_different_sequences, n_train, n_test, n_val, label_counts
+    )
 
+    # Step 5: Compute new statistics for each set (train, test, val) based on the chosen partitions.
+    train_statistics = df.loc[df['cluster'].isin(train_partitions)].sum(axis=0)
+    train_attributes = {'cluster': 0.0, 'C-size': train_statistics.get('AC', 0), 'label-counts': train_statistics.get('label-val', np.array([]))}
+    test_statistics = df.loc[df['cluster'].isin(test_partitions)].sum(axis=0)
+    test_attributes = {'cluster': 1.0, 'C-size': test_statistics.get('AC', 0), 'label-counts': test_statistics.get('label-val', np.array([]))}
+    val_statistics = df.loc[df['cluster'].isin(val_partitions)].sum(axis=0)
+    val_attributes = {'cluster': 2.0, 'C-size': val_statistics.get('AC', 0), 'label-counts': val_statistics.get('label-val', np.array([]))}
 
-    # Now, update part_graph
+    # Step 6: Update the part_graph with the new train, test, and validation assignments.
     for n, d in part_graph.nodes(data=True):
         if int(d['cluster']) in train_partitions:
-            nx.set_node_attributes(part_graph, {n:train_attributes})
+            nx.set_node_attributes(part_graph, {n: train_attributes})
         elif int(d['cluster']) in test_partitions:
-            nx.set_node_attributes(part_graph, {n:test_attributes})
+            nx.set_node_attributes(part_graph, {n: test_attributes})
         else:
-            nx.set_node_attributes(part_graph, {n:val_attributes})
-
-
+            nx.set_node_attributes(part_graph, {n: val_attributes})
 
 # Not used.
 def find_best_partition_combinations_heuristic(partition_connections: np.ndarray, n_train: int, n_test: int):
