@@ -27,7 +27,6 @@ def check_train_val_test_args(args):
     if args.test_ratio ==0:
         setattr(args, 'test_ratio', args.val_ratio)
         setattr(args, 'val_ratio', 0.0)
-    
 
 def compute_partition_matrix_similar_sequences(full_graph: nx.classes.graph.Graph, part_graph: nx.classes.graph.Graph, n_partitions: int, threshold: float) -> np.ndarray:
     '''
@@ -75,35 +74,86 @@ def compute_partition_matrix_different_sequences(full_graph: nx.classes.graph.Gr
             partition_connections_different_sequences[int(self_cluster), int(cl)] += count / (cluster_sizes[self_cluster] * cluster_sizes[cl])
     return partition_connections_different_sequences
 
-def find_best_partition_combinations(partition_connections: np.ndarray, n_train: int, n_test: int) -> Tuple[List[int], List[int], List[int]]:
+def find_best_partition_combinations(partition_connections_similar_sequences: np.ndarray, partition_connections_different_sequences: np.ndarray, n_train: int, n_test: int, 
+                                     n_val: int, label_counts: np.ndarray) -> Tuple[List[int], List[int], List[int]]:
     '''
-    Brute force try all combinations of partitions to find the set of partitions that have the maximum connections to each other.
+    Brute force try all combinations of partitions to find the set of partitions that have:
+      1- class balance (greater than 37 %)
+      2- minimum connections between train, test, and val sets (to avoid bias)
+      3- maximum diversity within each set (to ensure different sequences are included)
     This works because the expected number of partitions is low enough, e.g. steps of 10% or 5% -> max 20 partitions.
     Don't do this when using 1% steps, will explode.
     '''
-    partitions = list(range(partition_connections.shape[0]))
-    
-    
-    def get_best_combination(partitions, n):
-        best_combination = []
-        best_score = -1 # When a partition has no connection to any other, or to itself, the score will be 0. So make this -1
-        for comb in combinations(partitions, n):
-            score = partition_connections[comb,:][:,comb].sum()
-            if score>best_score:
-                best_combination=comb
-                best_score = score
+    partitions = list(range(partition_connections_similar_sequences.shape[0]))
+    total_labels = label_counts.sum(axis=0)
+    total_labels = total_labels / total_labels.sum()
+
+    def get_best_combination(partitions, n_train, n_test, n_val):
+        best_combination = ([], [], [])  # To store the best combination of partitions for train, test, and val.
+        best_score = -1  # Initialize with a score less than the minimum possible (e.g., 0).
+        min_score_similarity_possible = float("inf")
+        max_diversity_score = -float("inf")
+
+        # List to store all combinations and their scores
+        all_combinations = []
+
+        for train_comb in combinations(partitions, n_train):#all the possible combinations
+            remaining_after_train = [p for p in partitions if p not in train_comb]
+            for test_comb in combinations(remaining_after_train, n_test):
+                val_comb = [p for p in remaining_after_train if p not in test_comb] 
+
+                max_paritions_metric_below_tresh = partition_connections_similar_sequences.sum() #below treshold, similar sequences are considered (similar)
+                max_partitions_metric_supeior_tresh = partition_connections_different_sequences.sum() #higher than treshold, different sequences are considered (diversity)
+
+                # Calculate the class balance  for the combination.
+                train_distribution = label_counts[list(train_comb)].sum(axis=0)
+                test_distribution = label_counts[list(test_comb)].sum(axis=0)
+                val_distribution = label_counts[list(val_comb)].sum(axis=0)
+
+                train_distribution = train_distribution / train_distribution.sum()
+                test_distribution = test_distribution / test_distribution.sum()
+                val_distribution = val_distribution / val_distribution.sum()
                 
+                # Ensure no train/test/val set has a class imbalance greater than 35% 
+                #need do ajust in the future
+                if np.any(train_distribution < 0.37) or np.any(test_distribution < 0.37) or np.any(val_distribution < 0.37):
+                    continue
+                
+                # Penalization for connections between sets, ww want to minimize this because we want to avoid bias
+                train_test_penalty = partition_connections_similar_sequences[train_comb, :][:, test_comb].sum()
+                train_val_penalty = partition_connections_similar_sequences[train_comb, :][:, val_comb].sum()
+                test_val_penalty = partition_connections_similar_sequences[test_comb, :][:, val_comb].sum()
+                penalty = (train_test_penalty + train_val_penalty + test_val_penalty) / max_paritions_metric_below_tresh
+
+                 # Calculate the diversity score for each set combination, we want maximize this
+                train_diversity = partition_connections_different_sequences[train_comb, :][:, train_comb].sum()
+                test_diversity = partition_connections_different_sequences[test_comb, :][:, test_comb].sum()
+                val_diversity = partition_connections_different_sequences[val_comb, :][:, val_comb].sum()
+                diversity_score = (train_diversity + test_diversity + val_diversity) / max_partitions_metric_supeior_tresh
+
+                #the rule is to minimize the penalty and maximize the diversity score, in this order
+                if penalty < min_score_similarity_possible:
+                    min_score_similarity_possible = penalty
+                    best_combination = (train_comb, test_comb, val_comb)
+                elif penalty == min_score_similarity_possible:
+                    if diversity_score > max_diversity_score:
+                        max_diversity_score = diversity_score
+                        best_combination = (train_comb, test_comb, val_comb)
+                
+                # Store the combination and its scores
+                all_combinations.append({
+                    'train_comb': train_comb,
+                    'test_comb': test_comb,
+                    'val_comb': val_comb,
+                    'diversity_score': diversity_score,
+                    'external_penalty': penalty
+                })
+
         return best_combination
-    
-    # find the best combination for train.
-    train_partitions = get_best_combination(partitions, n_train)
-    remainder = [x for x in partitions if x not in train_partitions]
-    # find the best combination for test.
-    test_partitions = get_best_combination(remainder, n_test)
-    
-    # the remainder is the validation set.
-    val_partitions = [x for x in remainder if x not in test_partitions]
-    
+
+    # Find the best combination of partitions for train, test, and validation sets.
+    train_partitions, test_partitions, val_partitions = get_best_combination(partitions, n_train, n_test, n_val)
+
     return train_partitions, test_partitions, val_partitions
 
 
