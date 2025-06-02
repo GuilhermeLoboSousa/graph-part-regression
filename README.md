@@ -14,6 +14,20 @@ Graph-Part is a Python package for generating partitions (i.e. train-test splits
 
 Preprint: https://www.biorxiv.org/content/10.1101/2023.04.14.536886v1
 
+## 🔧 Modifications in this fork
+
+This fork includes several modifications to the original code developed by the authors of the preprint above, with the goal of improving the quality and usability of the train/test splits:
+
+- **Better class balance** across sets.
+- **Enforced sequence identity threshold** between datasets (e.g., between training and test sets), ensuring minimal homology.
+- **Increased intra-set diversity**, which may enhance model generalization and learning performance.
+
+These changes aim to generate more realistic and challenging sets for machine learning tasks involving biological sequences.
+
+## 📊 Upcoming comparison with original results
+
+In the next 7 days, I plan to run a comparative evaluation between this modified version and the original method described in the preprint. The results and main differences will be summarized and shared in a Jupyter Notebook within this repository.
+
 ## Installation
 
 GraphPart relies on [needleall](https://www.bioinformatics.nl/cgi-bin/emboss/help/needleall) from the [EMBOSS](http://emboss.sourceforge.net/) package for Needleman-Wunsch alignments of sequences. Please refer to the official EMBOSS documentation for installation methods.
