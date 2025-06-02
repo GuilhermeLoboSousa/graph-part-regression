@@ -276,7 +276,6 @@ def partition_data(full_graph: nx.classes.graph.Graph,
         attr['cluster'] = p
         nx.set_node_attributes(part_graph,{acs[ind]:attr})
 
-
 def remover( full_graph: nx.classes.graph.Graph, 
              part_graph: nx.classes.graph.Graph, 
              threshold:float, 
@@ -284,7 +283,7 @@ def remover( full_graph: nx.classes.graph.Graph,
              move_to_most_neighbourly:bool = True, 
              ignore_priority:bool = True,
              verbose: bool = True ):
-
+    
     if ignore_priority:
         json_dict['removal_step_1'] = {}
         dict_key = 'removal_step_1'
@@ -294,62 +293,120 @@ def remover( full_graph: nx.classes.graph.Graph,
     
     if verbose:
         print("Min-threshold", "\t", "#Entities", "\t", "#Edges", "\t", "Connectivity", "\t", "#Problematics", "\t", "#Relocated", "\t", "#To-be-removed")
+
     removing_round = 0
     while True:
         between_connectivity = {}
-        min_oc_wth= 1
-        number_moved = 0
+        min_oc_wth = 1
+        number_moved_from_train = 0
+        number_moved_from_test = 0
+        number_moved_from_val = 0
+
+        cluster_0_number_proteins_in = Counter()
+        cluster_1_number_proteins_in = Counter()
+        cluster_2_number_proteins_in = Counter()
+
+        nodes_by_cluster={0: {}, 1: {}, 2: {}}
+        # first loop to know the number of proteins by range-size(10 in 10) and label
         for n,d in full_graph.nodes(data=True):
-            neighbours = nx.neighbors(full_graph,n)
-            neighbour_clusters = Counter((part_graph.nodes[nb]['cluster'] for nb in nx.neighbors(full_graph,n) if full_graph[n][nb]['metric'] < threshold))
+            cluster = part_graph.nodes[n]['cluster']
+            seq_length = d['length']
+            range_key = (seq_length // 10) * 10
+            label_val = d['label-val']
+
+            if cluster == 0:
+                cluster_0_number_proteins_in[(range_key, label_val)] += 1
+            elif cluster == 1:
+                cluster_1_number_proteins_in[(range_key, label_val)] += 1
+            elif cluster == 2:
+                cluster_2_number_proteins_in[(range_key, label_val)] += 1
+            if (range_key, label_val) not in nodes_by_cluster[cluster]:
+                nodes_by_cluster[cluster][(range_key, label_val)] = []
+            nodes_by_cluster[cluster][(range_key, label_val)].append(n)
+
+        #the goal is to have more proteins in cluster 0 than in cluster 1 for the same range-size and label
+        for (range_key, label_val), count in cluster_1_number_proteins_in.items():
+            #ensure that if a range do not have any protein in cluster 0, it is created- to avoid key error
+            if (range_key, label_val) not in cluster_0_number_proteins_in:
+                cluster_0_number_proteins_in[(range_key, label_val)] = 0
+                nodes_by_cluster[0][(range_key, label_val)] = []
+            if cluster_0_number_proteins_in[(range_key, label_val)] < count:#if the number of proteins in cluster 0 is less than the number of proteins in cluster 1
+                nodes_cluster_1 = nodes_by_cluster[1][(range_key, label_val)]#get all the proteins in cluster 1 (test)
+                nodes_cluster_0 = nodes_by_cluster[0][(range_key, label_val)]#get all the proteins in cluster 0 (train)
+
+                # Move all proteins from cluster 1 to cluster 0, to ensure that the number of proteins in cluster 0 is greater than the number of proteins in cluster 1 for the same range-size and label
+                for node in nodes_cluster_1:
+                    part_graph.nodes[node]['cluster'] = 0
+                    cluster_0_number_proteins_in[(range_key, label_val)] += 1
+                    cluster_1_number_proteins_in[(range_key, label_val)] -= 1
+
+                # move all proteins from cluster 0 to cluster 1
+                for node in nodes_cluster_0:
+                    part_graph.nodes[node]['cluster'] = 1
+                    cluster_1_number_proteins_in[(range_key, label_val)] += 1
+                    cluster_0_number_proteins_in[(range_key, label_val)] -= 1
+
+        for n, d in full_graph.nodes(data=True):
+            neighbours = nx.neighbors(full_graph, n)
+            possible_neighbours= [n for n in neighbours]
+            neighbour_clusters = Counter((part_graph.nodes[nb]['cluster'] for nb in possible_neighbours if full_graph[n][nb]['metric'] <threshold))
             cluster = part_graph.nodes[n]['cluster']
             nb_oc_wth = []
-            
-            ## FIRST MOVE NODE TO CLUSTER WITH MOST NEIGHBOURS
+            seq_length = d['length']
+            range_key = (seq_length // 10) * 10
+            label_val = d['label-val']
+
             if move_to_most_neighbourly:
-                if len(neighbour_clusters) > 0:
-                    most_neighbourly_cluster = max(neighbour_clusters.items(), key=lambda x:x[1])[0]
-                    if most_neighbourly_cluster != cluster:
+                if len(neighbour_clusters) > 0: # if there are neighbours (with metric<treshold- similar sequences), move to the cluster with the most neighbours to ensure no bias in sets
+                    most_neighbourly_cluster =  max(neighbour_clusters, key=neighbour_clusters.get) #sequence is moved to the cluster with the most neighbours
+                    if cluster == 0 and most_neighbourly_cluster in [1, 2]: #if the sequence is in cluster 0 and the most neighbourly cluster is 1 or 2 (move from train to test or val)
                         part_graph.nodes[n]['cluster'] = most_neighbourly_cluster
-                        number_moved += 1
-            
-            if ignore_priority and full_graph.nodes[n]['priority']:
+                        cluster = part_graph.nodes[n]['cluster']
+                        number_moved_from_train += 1
+                    elif cluster == 1 and most_neighbourly_cluster == 2: #if the sequence is in cluster 1 and the most neighbourly cluster is 2 (move from test to val)
+                        part_graph.nodes[n]['cluster'] = most_neighbourly_cluster
+                        cluster = part_graph.nodes[n]['cluster']
+                        number_moved_from_test += 1
+                    elif cluster == 2 and most_neighbourly_cluster == 1: #if the sequence is in cluster 2 and the most neighbourly cluster is 1 (move from val to test)
+                        part_graph.nodes[n]['cluster'] = most_neighbourly_cluster
+                        cluster = part_graph.nodes[n]['cluster']
+                        number_moved_from_val += 1
+
+            if ignore_priority:# and full_graph.nodes[n]['priority']:
                 between_connectivity[n] = 0
                 continue
 
-            for neighbour in neighbours:
+            for neighbour in possible_neighbours: #strategy began to eliminate the most problematic entities/sequences that have connections with other sequences in other clusters (below metric)
                 nb_cluster = part_graph.nodes[neighbour]['cluster']
-                if nb_cluster != cluster and full_graph[n][neighbour]['metric'] < threshold:
+                if nb_cluster != cluster and full_graph[n][neighbour]['metric'] < 0.6:
                     min_oc_wth = min(min_oc_wth, full_graph[n][neighbour]['metric'])
                     nb_oc_wth.append(full_graph[n][neighbour]['metric'])
-
-            between_connectivity[n] = len(nb_oc_wth)
             
+            between_connectivity[n] = len(nb_oc_wth)
         nx.set_node_attributes(full_graph, between_connectivity, 'between_connectivity')
         bc_sum = np.sum(np.fromiter((d['between_connectivity'] for n,d in full_graph.nodes(data=True)),int))
-        bc_count = np.sum(np.fromiter((1 for n,d in full_graph.nodes(data=True) if d['between_connectivity'] > 0),int))
-
+        bc_count = np.sum(np.fromiter((1 for n,d in full_graph.nodes(data=True) if d['between_connectivity'] > 0),int)) #know the sequences that have more problematics neighbours
         removing_round += 1
-        number_to_remove = int(bc_count*np.log10(removing_round)/100)+1 # int(bc_count*0.01)+1
-        ## Remove 1% + 1 of the most problematic entities
+        number_to_remove = int(bc_count*np.log10(removing_round)/100)+1 # int(bc_count*0.01)+1 (another strategy) #gradualy increase the number of sequences to remove
+        moved = number_moved_from_train + number_moved_from_test + number_moved_from_val
         remove_these = [x[0] for x in sorted(((n,d['between_connectivity']) for n,d in full_graph.nodes(data=True) if d['between_connectivity'] > 0), key=lambda x:x[1], reverse=True)[:number_to_remove]]
-        
+
         if verbose:
-            print(round(min_oc_wth,7), "\t\t", full_graph.number_of_nodes(), "\t\t", full_graph.number_of_edges(), "\t\t", bc_sum, "\t\t", bc_count, "\t\t", number_moved, "\t\t", len(remove_these))
+            print(round(min_oc_wth,7), "\t\t", full_graph.number_of_nodes(), "\t\t", full_graph.number_of_edges(), "\t\t", bc_sum, "\t\t", bc_count, "\t\t", moved, "\t\t", len(remove_these))
         
         json_dict[dict_key][removing_round] = {
                                                 "Min-threshold": round(min_oc_wth,7) ,
                                                 "#Entities": full_graph.number_of_nodes(),
                                                 "#Edges": full_graph.number_of_edges(),
-                                                "Connectivity": int(bc_sum), 
-                                                "#Problematics": int(bc_count), 
-                                                "#Relocated": number_moved, 
+                                                "Connectivity": int(bc_sum), #soma de todos os problemas possiveis
+                                                "#Problematics": int(bc_count), # nº de nos que tem conexoes com outros nos maximo n de seqs
+                                                "#Relocated": moved, 
                                                 "#To-be-removed":len(remove_these)
                                                 }
-
         full_graph.remove_nodes_from(remove_these)
+        
         # If we've removed the last problematic entities, we stop
-        if full_graph.number_of_nodes()==0 or bc_sum==0 or len(remove_these) == bc_count:
+        if full_graph.number_of_nodes()==0 or bc_sum==0 or len(remove_these) == 0:
             break
 
 def score_partitioning(df:pd.core.frame.DataFrame) -> float:
