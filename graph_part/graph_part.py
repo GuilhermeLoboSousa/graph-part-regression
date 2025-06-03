@@ -246,132 +246,123 @@ def optimize_partitions(cl_number, cluster_vector, target_vector, label_bins, n_
 
     return best_cl_number, best_score
 
-def partition_data(full_graph: nx.classes.graph.Graph, 
-                   part_graph: nx.classes.graph.Graph,
-                   labels: dict,
-                   threshold: float,
-                   nr_of_parts: int,
-                   mode: int):
-    part_size = full_graph.number_of_nodes()//nr_of_parts
+def partition_assignment_regression(cluster_vector, target_vector, n_partitions, n_bins=10, alpha=1.0, beta=1.0, n_mix=10):
+    """
+    Partition clustered data into N subsets while maintaining balance in both:
+    - Regression target value distribution (via quantile-based binning)
+    - Total sum of target values per partition
 
-    label_limits = np.array([x[1]['lim'] for x in sorted(labels.items(), key=lambda x:x[1]['val'] )])
-    print(part_size, label_limits)
+    Parameters:
+    -----------
+    cluster_vector : np.ndarray of shape (n_samples,)
+        Array assigning each protein to a cluster (original from article Graph-Part).
+        Note: Proteins in the same cluster are considered similar and must be kept in the same partition (if possible).
+
+    target_vector : np.ndarray of shape (n_samples,)
+        Continuous regression target values (e.g., termoestability).
+
+    n_partitions : int
+        Number of partitions (come from test , val ratio).
+
+    n_bins : int (default=10)
+        Number of bins to discretize the regression target values, using quantile binning.
+
+    alpha : float (default=1.0)
+        Weight for the divergence in bin distribution when calculating the partition score.
+
+    beta : float (default=1.0)
+        Weight for the deviation from balanced sum of target values when calculating the score.
     
-    count = 0
-    ## AC, cluster, label
-    acs = []
-    clusters = []
-    labels = []
-    print("Initialization mode", mode)
+    n_mix : int (default=10)
+        Number of random swaps to perform to optimize the partition assignments.
 
-    ## Initialize the initialization
-    for ind, AC in tqdm(enumerate(part_graph.nodes()), desc='Initializing'):
-        label_counts = np.zeros(len(label_limits), dtype=int)
-        label_counts[full_graph.nodes[AC]['label-val']] = 1
-        cluster_nr = ind
-        
-        if mode == 'simple':
-            d = full_graph.nodes[AC]
-            acs.append(AC)
-            clusters.append(cluster_nr)
-            labels.append(d['label-val'])
-        nx.set_node_attributes(part_graph, {
-            AC:{
-                'cluster': cluster_nr,
-                'C-size': 1,
-                'label-counts': label_counts
-            }
-        })
+    Returns:
+    --------
+    cl_number : np.ndarray of shape (n_samples,)
+        An array indicating to which partition each protein is assigned .
+    """
+    
+    # 1. Discretize the continuous target values into quantile-based bins
+    #for now the strategy is quantile, but it can be changed to uniform or kmeans
+    est = KBinsDiscretizer(n_bins=n_bins, encode='ordinal', strategy='quantile')
+    label_bins = est.fit_transform(target_vector.reshape(-1, 1)).astype(int).flatten()
+    with open("label_bins_output.txt", "w") as f:
+        f.write("Label bins:\n")
+        f.write(", ".join(map(str, label_bins)))  # Converte os valores para string e os separa por vírgula
+    # 2. Get unique cluster IDs
+    # this info is associated with the orignial code fro  graphpart article
+    #where in each cluster all the proteins are similar
+    u_cluster = np.unique(cluster_vector)
 
-    ## Restricted closest neighbour linkage
-    if mode in ['slow-nn', 'fast-nn']:
-        ## Linking entities, if restrictions allow
+    # 3. Initialize tracking structures
+    loc_bin_dist = np.zeros((n_partitions, n_bins))  # Bin distribution in each partition
+    loc_sum = np.zeros(n_partitions)                # Sum of target values(continue values) in each partition
+    cl_number = np.zeros(cluster_vector.shape[0])   # Output: partition ID for each sample
 
+    # 4. Iterate through each cluster and assign to the best partition
+    for i in u_cluster: #each cluster
+        # Identify the positions (indices) of samples in this cluster
+        positions = np.where(cluster_vector == i)[0] #analysis of each cluster from 0---end
 
-        # NOTE sorting the networkx edges using sorted() becomes extremely slow on large graphs.
-        # partly, because .edges takes forever to yield its EdgeView
-        # workaround by instead extracting all the metric values into a numpy vector and argsorting this.
-        # tested on ~400m edges, np.argsort 10 min vs. sorted() multiple hours
-        queries = []
-        libs = []
-        metrics = []
-                
-        start = time.perf_counter()
+        # Extract target values and corresponding bins for this cluster
+        cluster_targets = target_vector[positions] #continue value for a protein that below to the cluster in analysis
+        cluster_bins = label_bins[positions]#bins strategy
+        cluster_sum = np.sum(cluster_targets)
 
-        for qry, lib, data in full_graph.edges(data=True):
-            queries.append(qry)
-            libs.append(lib)
-            metrics.append(data['metric'])
+        # Count the number of samples in each bin for this cluster, like 3 proteins in bin 0, 2 in bin 1 for the cluster A..
+        bin_counts = np.zeros(n_bins)
+        unique_bins, bin_freq = np.unique(cluster_bins, return_counts=True)
+        bin_counts[unique_bins] = bin_freq
 
-        elapsed_align = time.perf_counter() - start
-        print(f"Edge iteration completed in {elapsed_align:0.2f} seconds.")
-        
-        
-        metrics = np.array(metrics)
-        inds = np.argsort(metrics)
-        elapsed_align = time.perf_counter() - start
-        print(f"Edge sorting competed at {elapsed_align:0.2f} seconds.")
-        for idx in tqdm(inds, desc='clustering'):
-            qry, lib = queries[idx], libs[idx]
-            data = full_graph.edges[qry, lib]
+        # Find the best partition for this cluster
+        best_score = float('inf')
+        best_partition = None
 
-            ### continue as below
+        for p in range(n_partitions): # for each partition
+            # a) Simulate bin distribution if we add this cluster to partition p
+            bin_dist = loc_bin_dist[p] + bin_counts
+            bin_dist_norm = bin_dist / np.sum(bin_dist)
 
-        # for qry, lib, data in tqdm(sorted(full_graph.edges(data=True), key=lambda x: x[2]['metric']), desc='Clustering'):
-            if data['metric'] > threshold:
-                ## No need to continue if threshold reached.
-                break
-            
-            if part_graph.has_edge(qry, lib):
-                ## Update edge if it exists
-                if part_graph[qry][lib]['metric'] > data['metric']:
-                    nx.set_edge_attributes(part_graph,{(qry,lib):data['metric']}, 'metric')
-                continue
-            
-            if part_graph.nodes[qry]['cluster'] == part_graph.nodes[lib]['cluster']:
-               continue
+            # b) Calculate global bin distribution if cluster is added to partition p
+            overall_bin_dist = np.sum(loc_bin_dist, axis=0) + bin_counts
+            overall_bin_dist /= np.sum(overall_bin_dist)
 
-            ## RESTRICTIONS!
-            if part_graph.nodes[qry]['C-size'] >= part_size:
-                continue
-            if part_graph.nodes[lib]['C-size'] >= part_size:
-                continue
-            if (part_graph.nodes[qry]['label-counts']+part_graph.nodes[lib]['label-counts'] >= label_limits).any():
-                continue
-            
-            ## Add edge and update mini-cluster
-            attr = part_graph.nodes[qry]
-            if attr['cluster'] != part_graph.nodes[lib]['cluster'] or mode == 'fast-nn':
-                attr['C-size'] += part_graph.nodes[lib]['C-size']
-                attr['label-counts'] += part_graph.nodes[lib]['label-counts']
-            nx.set_node_attributes(part_graph, {qry:attr})
-            part_graph.add_edge(qry, lib, metric=data['metric'])
+            # c) Compute L1 divergence between local and global bin distributions
+            #we want to minimize the difference between the local and global bin distribution
+            #avoiding the situation where all the proteins in a cluster are assigned to the same bin
+            bin_div = np.sum(np.abs(bin_dist_norm - overall_bin_dist))
 
-            for descendant in nx.descendants(part_graph, qry):
-                nx.set_node_attributes(part_graph, {descendant:attr})
+            # d) Compute difference in target sum from expected average
+            temp_sum = loc_sum[p] + cluster_sum
+            avg_sum = (np.sum(loc_sum) + cluster_sum) / n_partitions
+            sum_diff = np.abs(temp_sum - avg_sum) #we want to minimize the difference between the local and global sum of target values
 
-            count += 1
-            #if count % 10000 == 0:
-            #    print("edges:", part_graph.number_of_edges()) 
-            #    print (attr, data)
-        #with open('graph_part_miniclusters.txt','w+') as outf:
-        for cc_nr, cc in enumerate(nx.connected_components(part_graph)):
-            for n in cc:
-                d = full_graph.nodes[n]
-                acs.append(n)
-                clusters.append(cc_nr)
-                labels.append(d['label-val'])
-                    #outf.write("%s,%d\n" % (n,cc_nr))
+            # e) Final score combines bin divergence and target sum imbalance
+            # The weights alpha and beta control the importance of each term
+            score = alpha * bin_div + beta * sum_diff
 
-    acs = np.array(acs)
-    clusters = np.array(clusters)
-    labels = np.array(labels)
-    print(len(np.unique(labels)))
-    partitioning = partition_assignment(clusters, labels, nr_of_parts, len(np.unique(labels)))
-    for ind, p in enumerate(partitioning):
-        attr = part_graph.nodes[acs[ind]]
-        attr['cluster'] = p
-        nx.set_node_attributes(part_graph,{acs[ind]:attr})
+            # f) Store the partition with the lowest score
+            if score < best_score:
+                best_score = score
+                best_partition = p
+
+        # 5. Assign the cluster to the chosen partition
+        cl_number[positions] = best_partition #assign the cluster to the best partition
+        loc_bin_dist[best_partition] += bin_counts #add the bin counts to the best partition
+        loc_sum[best_partition] += cluster_sum #add the cluster sum to the best partition
+    from collections import Counter
+
+    # Contar a composição das partições
+    partition_composition = Counter(cl_number)
+
+    # Abrir um arquivo para salvar a saída
+    with open("partition_composition.txt", "w") as f:
+        f.write("Partitions created and their composition:\n")
+        for partition, count in partition_composition.items():
+            f.write(f"Partition {int(partition)}: {count} elements\n")
+
+    cl_number, final_score = optimize_partitions(cl_number, cluster_vector, target_vector, label_bins, n_partitions, n_bins, alpha, beta, n_mix)
+    return cl_number.astype(int)
 
 def remover( full_graph: nx.classes.graph.Graph, 
              part_graph: nx.classes.graph.Graph, 
