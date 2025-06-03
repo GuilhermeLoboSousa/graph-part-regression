@@ -189,6 +189,62 @@ def calculate_global_score(cl_number, cluster_vector, target_vector, label_bins,
 
     return total_score
         
+def optimize_partitions(cl_number, cluster_vector, target_vector, label_bins, n_partitions, n_bins, alpha, beta, n_mix):
+    """
+    Optimizes the partition assignments by performing random swaps and checking if the global score improves.
+
+    Parameters:
+    -----------
+    cl_number : np.ndarray
+        Array indicating the partition assignment for each sample.
+    cluster_vector : np.ndarray
+        Array indicating the cluster each sample belongs to.
+    target_vector : np.ndarray
+        Array of continuous target values (e.g., regression targets).
+    label_bins : np.ndarray
+        Array of discretized target values (bins).
+    n_partitions : int
+        Number of partitions.
+    n_bins : int
+        Number of bins used for discretizing the target values.
+    alpha : float
+        Weight for the divergence in bin distribution.
+    beta : float
+        Weight for the imbalance in the sum of target values.
+    n_mix : int
+        Number of random swaps to perform.
+
+    Returns:
+    --------
+    best_cl_number : np.ndarray
+        The optimized partition assignments.
+    best_score : float
+        The global score for the optimized partition configuration.
+    """
+
+    # Calculate the initial global score
+    best_score = calculate_global_score(cl_number, cluster_vector, target_vector, label_bins, n_partitions, n_bins, alpha, beta)
+    best_cl_number = np.copy(cl_number)
+
+    # Perform random swaps to optimize the partition assignments
+    for _ in range(n_mix):
+        # Create a copy of the current partition assignments
+        new_cl_number = np.copy(best_cl_number)
+
+        # Select a random cluster and assign it to a new random partition
+        random_cluster = np.random.choice(np.unique(cluster_vector))
+        random_partition = np.random.choice(n_partitions)
+        new_cl_number[cluster_vector == random_cluster] = random_partition
+
+        # Calculate the new global score
+        new_score = calculate_global_score(new_cl_number, cluster_vector, target_vector, label_bins, n_partitions, n_bins, alpha, beta)
+
+        # If the new score is better, accept the change
+        if new_score < best_score:
+            best_score = new_score
+            best_cl_number = new_cl_number
+
+    return best_cl_number, best_score
 
 def partition_data(full_graph: nx.classes.graph.Graph, 
                    part_graph: nx.classes.graph.Graph,
