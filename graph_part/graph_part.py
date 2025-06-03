@@ -117,36 +117,77 @@ def load_entities(entity_fp: str, priority_name: str, labels_name: str):
     return full_graph, part_graph, labels
 
 
-def partition_assignment(cluster_vector, label_vector, n_partitions, n_class):
-    ''' Function to separate proteins into N partitions with balanced classes 
-        Courtesy of José Juan Almagro Armenteros '''
-    
-    # Unique cluster number
-    u_cluster = np.unique(cluster_vector)
-    
-    # Initialize matrices
-    loc_number = np.ones((n_partitions,n_class))
-    cl_number = np.zeros(cluster_vector.shape[0])
-    
-    for i in u_cluster:
-        # Extract the labels for the proteins in that cluster
-        positions = np.where(cluster_vector == i)
-        cl_labels = label_vector[positions]
+from sklearn.preprocessing import KBinsDiscretizer
+
+def calculate_global_score(cl_number, cluster_vector, target_vector, label_bins, n_partitions, n_bins, alpha, beta):
+    """
+    Calculates the global score for a given partition configuration.
+
+    Parameters:
+    -----------
+    cl_number : np.ndarray
+        Array indicating the partition assignment for each sample.
+    cluster_vector : np.ndarray
+        Array indicating the cluster each sample belongs to.
+    target_vector : np.ndarray
+        Array of continuous target values (e.g., regression targets).
+    label_bins : np.ndarray
+        Array of discretized target values (bins).
+    n_partitions : int
+        Number of partitions.
+    n_bins : int
+        Number of bins used for discretizing the target values.
+    alpha : float
+        Weight for the divergence in bin distribution.
+    beta : float
+        Weight for the imbalance in the sum of target values.
+
+    Returns:
+    --------
+    total_score : float
+        The global score for the current partition configuration.
+    """
+    # Initialize matrices to track bin distributions and target sums for each partition
+    loc_bin_dist = np.zeros((n_partitions, n_bins))  # Bin distribution per partition
+    loc_sum = np.zeros(n_partitions)  # Sum of target values per partition
+
+    # Calculate bin distributions and target sums for each partition
+    for p in range(n_partitions):
+        # Get indices of samples assigned to partition `p`
+        indices = np.where(cl_number == p)[0]
         
-        # Count number of each class
-        u, count = np.unique(cl_labels, return_counts=True)
+        # Calculate the sum of target values for partition `p`
+        loc_sum[p] = np.sum(target_vector[indices])
         
-        u = u.astype(np.int32)
-        temp_loc_number = np.copy(loc_number)
-        temp_loc_number[:,u] += count
-        loc_per = loc_number/temp_loc_number
-        best_group = np.argmin(np.sum(loc_per,axis=1))
-        loc_number[best_group,u] += count
-        
-        # Store the selected partition
-        cl_number[positions] = best_group
-    
-    return cl_number
+        # Count the number of samples in each bin for partition `p`
+        for bin_idx in label_bins[indices]:
+            loc_bin_dist[p, bin_idx] += 1
+
+    # Calculate the overall bin distribution across all partitions
+    overall_bin_dist = np.sum(loc_bin_dist, axis=0) / np.sum(loc_bin_dist)
+
+    # Initialize the total score
+    total_score = 0
+
+    # Calculate the score for each partition
+    for p in range(n_partitions):
+        # Normalize the bin distribution for partition `p`
+        if np.sum(loc_bin_dist[p]) > 0:
+            bin_dist_norm = loc_bin_dist[p] / np.sum(loc_bin_dist[p])
+        else:
+            bin_dist_norm = np.zeros(n_bins)
+
+        # Calculate the L1 divergence between local and global bin distributions
+        bin_div = np.sum(np.abs(bin_dist_norm - overall_bin_dist))
+
+        # Calculate the imbalance in the sum of target values
+        avg_sum = np.sum(loc_sum) / n_partitions  # Average sum of target values across partitions
+        sum_diff = np.abs(loc_sum[p] - avg_sum)  # Absolute difference from the average
+
+        # Combine the two components to calculate the score for partition `p`
+        total_score += alpha * bin_div + beta * sum_diff
+
+    return total_score
         
 
 def partition_data(full_graph: nx.classes.graph.Graph, 
