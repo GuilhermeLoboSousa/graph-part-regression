@@ -390,49 +390,6 @@ def remover( full_graph: nx.classes.graph.Graph,
         number_moved_from_test = 0
         number_moved_from_val = 0
 
-        cluster_0_number_proteins_in = Counter()
-        cluster_1_number_proteins_in = Counter()
-        cluster_2_number_proteins_in = Counter()
-
-        nodes_by_cluster={0: {}, 1: {}, 2: {}}
-        # first loop to know the number of proteins by range-size(10 in 10) and label
-        for n,d in full_graph.nodes(data=True):
-            cluster = part_graph.nodes[n]['cluster']
-            seq_length = d['length']
-            range_key = (seq_length // 10) * 10
-            label_val = d['label-val']
-
-            if cluster == 0:
-                cluster_0_number_proteins_in[(range_key, label_val)] += 1
-            elif cluster == 1:
-                cluster_1_number_proteins_in[(range_key, label_val)] += 1
-            elif cluster == 2:
-                cluster_2_number_proteins_in[(range_key, label_val)] += 1
-            if (range_key, label_val) not in nodes_by_cluster[cluster]:
-                nodes_by_cluster[cluster][(range_key, label_val)] = []
-            nodes_by_cluster[cluster][(range_key, label_val)].append(n)
-
-        #the goal is to have more proteins in cluster 0 than in cluster 1 for the same range-size and label
-        for (range_key, label_val), count in cluster_1_number_proteins_in.items():
-            #ensure that if a range do not have any protein in cluster 0, it is created- to avoid key error
-            if (range_key, label_val) not in cluster_0_number_proteins_in:
-                cluster_0_number_proteins_in[(range_key, label_val)] = 0
-                nodes_by_cluster[0][(range_key, label_val)] = []
-            if cluster_0_number_proteins_in[(range_key, label_val)] < count:#if the number of proteins in cluster 0 is less than the number of proteins in cluster 1
-                nodes_cluster_1 = nodes_by_cluster[1][(range_key, label_val)]#get all the proteins in cluster 1 (test)
-                nodes_cluster_0 = nodes_by_cluster[0][(range_key, label_val)]#get all the proteins in cluster 0 (train)
-
-                # Move all proteins from cluster 1 to cluster 0, to ensure that the number of proteins in cluster 0 is greater than the number of proteins in cluster 1 for the same range-size and label
-                for node in nodes_cluster_1:
-                    part_graph.nodes[node]['cluster'] = 0
-                    cluster_0_number_proteins_in[(range_key, label_val)] += 1
-                    cluster_1_number_proteins_in[(range_key, label_val)] -= 1
-
-                # move all proteins from cluster 0 to cluster 1
-                for node in nodes_cluster_0:
-                    part_graph.nodes[node]['cluster'] = 1
-                    cluster_1_number_proteins_in[(range_key, label_val)] += 1
-                    cluster_0_number_proteins_in[(range_key, label_val)] -= 1
 
         for n, d in full_graph.nodes(data=True):
             neighbours = nx.neighbors(full_graph, n)
@@ -497,45 +454,58 @@ def remover( full_graph: nx.classes.graph.Graph,
         if full_graph.number_of_nodes()==0 or bc_sum==0 or len(remove_these) == 0:
             break
 
-def score_partitioning(df:pd.core.frame.DataFrame) -> float:
-    s0 = df.shape[0]
-    s1 = df.shape[1]
-    return float((df.product(axis=1)**(1/s1)).product()**(1/s0))
+def score_partitioning(df: pd.core.frame.DataFrame) -> float:    
+    if 'sum' in df.columns:
+        relevant_column = df['sum']
+    else:
+        raise ValueError("Expected 'sum' column in DataFrame for regression scoring.")
+    
+    s0 = relevant_column.shape[0]  # Número de linhas
+    return float((relevant_column**(1/s0)).product())
 
-def display_results(
+def display_results_regression(
     part_graph: nx.classes.graph.Graph, 
     full_graph: nx.classes.graph.Graph,
-    labels: dict,
     nr_of_parts: int,
     verbose: bool = True) -> Tuple[pd.core.frame.DataFrame, pd.core.frame.DataFrame]:
-    """ """
-    df = pd.DataFrame(((d) for n,d in full_graph.nodes(data=True)))
-    df['cluster'] = [part_graph.nodes[n]['cluster'] for n in full_graph.nodes()]
+    """
+    Display results for regression problems, focusing on continuous target values (label-val).
 
-    # It can happen that removal completely removed one partition.
-    # In this case, we need to report back an error
+    Args:
+        part_graph (nx.Graph): The partition graph with cluster assignments.
+        full_graph (nx.Graph): The full graph with node attributes.
+        nr_of_parts (int): Number of partitions.
+        verbose (bool): If True, print the results.
+
+    Returns:
+        Tuple[pd.DataFrame, pd.DataFrame]: DataFrame with node details and summary statistics.
+    """
+    # Create a DataFrame from the full graph nodes
+    df = pd.DataFrame(((d) for n, d in full_graph.nodes(data=True)))
+    df['cluster'] = [part_graph.nodes[n]['cluster'] for n in full_graph.nodes()]
+    print(df['cluster'] )
+    # Check if any partition is completely removed
     if len(df['cluster'].unique()) < nr_of_parts:
         error_string = f'''
         Impossible to generate the desired {nr_of_parts} partitions at the current partitioning threshold.
-        Removal of sequences to achieve separation results in loss of {nr_of_parts-len(df['cluster'].unique())} complete partitions.
+        Removal of sequences to achieve separation results in loss of {nr_of_parts - len(df['cluster'].unique())} complete partitions.
         '''
         raise RuntimeError(error_string)
 
+    # Add node identifiers
     df['AC'] = [n for n in full_graph.nodes()]
-    result = df.groupby(['cluster','label-val'])['AC'].count().reset_index().pivot_table(values='AC',columns=['label-val'],index=['cluster']).T
-    df.set_index('AC', inplace=True)
-    result['label'] = ''
-    for l in labels:
-        result.loc[labels[l]['val'], 'label'] = l
-        result['mean'] = result[list(range(nr_of_parts))].mean(axis=1)
-        result['count'] = result[list(range(nr_of_parts))].sum(axis=1)
-    
+
+    # Calculate statistics for each partition
+    result = df.groupby('cluster')['label-val'].agg(['mean', 'sum', 'std', 'count']).T
+    result['total'] = result.sum(axis=1)  # Add a total column for overall statistics
+
     if verbose:
         print(result)
         print()
-        print("Partitioning score:", score_partitioning(result[range(nr_of_parts)]))
+        #print("Partitioning score:", score_partitioning(result.loc['sum']))
         print()
-    return df, result
+
+    return df, result   
     
 
 def removal_needed(
@@ -546,14 +516,20 @@ def removal_needed(
     return True
 
 
-def make_graphs_from_sequences(config: Dict[str, Any], threshold: float, json_dict: Dict[str,Any], verbose: bool = True) -> Tuple[nx.classes.graph.Graph, nx.classes.graph.Graph, dict]:
-    '''
-    This function performs the alignments and constructs the graphs.
+from .precomputed_utils import load_edge_list
+from .mmseqs_utils import generate_edges_mmseqs
+from .needle_utils import generate_edges_mp
+from .needle_utils import generate_edges
+from .mmseqs_needle_combined_utils import generate_edges_mmseqs_needle_combined
+
+def make_graphs_from_sequences_regression(config: Dict[str, Any], threshold: float, json_dict: Dict[str, Any], verbose: bool = True) -> Tuple[nx.classes.graph.Graph, nx.classes.graph.Graph]:
+    """
+    This function performs the alignments and constructs the graphs for regression problems.
 
     Parameters:
     ------------
         config: dict
-            A dictionary of all parameters needed to run graph-part
+            A dictionary of all parameters needed to run graph-part.
 
         threshold: float
             The threshold to use for partitioning. Alignments 
@@ -562,65 +538,55 @@ def make_graphs_from_sequences(config: Dict[str, Any], threshold: float, json_di
         json_dict: dict
             A dictionary to collect outputs for the final report.
 
-        verbose:  bool
-            If True, print all processing steps to command line.
+        verbose: bool
+            If True, print all processing steps to the command line.
 
     Returns:
     ------------
         full_graph: nx.classes.graph.Graph
-            Networkx graph that has sequences as nodes and their distances as edge attributes
+            Networkx graph that has sequences as nodes and their distances as edge attributes.
         part_graph: nx.classes.graph.Graph
             Networkx graph that collects the final partition assignments.
-        labels: dict
-            Dictionary of label statistics
-    '''
-    full_graph, part_graph, labels = load_entities(config['fasta_file'], config['priority_name'], config['labels_name'])
+    """
+    # Load entities and initialize graphs
+    full_graph, part_graph, _ = load_entities(config['fasta_file'], config['priority_name'], config['labels_name'])
 
-    for l in labels:
-        """ Find the expected number of entities labelled l in any partition """
-        labels[l]['lim'] = labels[l]['num']//config['partitions']
-
-    ## Let's see the initial label distribution
+    # Debugging: Print the range of continuous target values
     if verbose:
-        print(pd.DataFrame(labels).T)
-    json_dict['labels_start'] = labels
+        label_vals = [full_graph.nodes[AC]['label-val'] for AC in full_graph.nodes()]
+        print(f"Loaded {len(label_vals)} entities with label-val range: {min(label_vals)} to {max(label_vals)}")
 
-
+    # Handle different alignment modes
     if config['alignment_mode'] == 'precomputed':
-        from .precomputed_utils import load_edge_list
         print('Parsing edge list.')
         load_edge_list(config['edge_file'], full_graph, config['transformation'], threshold, config['metric_column'])
-        elapsed_align = time.perf_counter() - json_dict['time_script_start'] 
+        elapsed_align = time.perf_counter() - json_dict['time_script_start']
         if verbose:
             print(f"Edge list parsing executed in {elapsed_align:0.2f} seconds.")
 
     elif config['alignment_mode'] == 'mmseqs2':
-        from .mmseqs_utils import generate_edges_mmseqs
         generate_edges_mmseqs(config['fasta_file'], full_graph, config['transformation'], threshold, config['threshold'], denominator=config['denominator'], delimiter='|', is_nucleotide=config['nucleotide'], use_prefilter=config['prefilter'])
-        elapsed_align = time.perf_counter() - json_dict['time_script_start'] 
+        elapsed_align = time.perf_counter() - json_dict['time_script_start']
         if verbose:
-            print(f"Pairwise alignment executed in {elapsed_align:0.2f} seconds.")    
+            print(f"Pairwise alignment executed in {elapsed_align:0.2f} seconds.")
 
-    elif config['alignment_mode'] == 'needle' and config['threads']>1:
-        from .needle_utils import generate_edges_mp
+    elif config['alignment_mode'] == 'needle' and config['threads'] > 1:
         print('Computing pairwise sequence identities.')
         generate_edges_mp(config['fasta_file'], full_graph, config['transformation'], threshold, denominator=config['denominator'], n_chunks=config['chunks'], n_procs=config['threads'], parallel_mode=config['parallel_mode'], triangular=config['triangular'], delimiter='|', 
-                            is_nucleotide=config['nucleotide'], gapopen=config['gapopen'], gapextend=config['gapextend'], endweight=config['endweight'], endopen=config['endopen'], endextend=config['endextend'], matrix=config['matrix'])
-        elapsed_align = time.perf_counter() - json_dict['time_script_start'] 
+                          is_nucleotide=config['nucleotide'], gapopen=config['gapopen'], gapextend=config['gapextend'], endweight=config['endweight'], endopen=config['endopen'], endextend=config['endextend'], matrix=config['matrix'])
+        elapsed_align = time.perf_counter() - json_dict['time_script_start']
         if verbose:
             print(f"Pairwise alignment executed in {elapsed_align:0.2f} seconds.")
 
     elif config['alignment_mode'] == 'needle':
-        from .needle_utils import generate_edges
         print('Computing pairwise sequence identities.')
-        generate_edges(config['fasta_file'],full_graph, config['transformation'], threshold, denominator=config['denominator'], delimiter='|',
-                            is_nucleotide=config['nucleotide'], gapopen=config['gapopen'], gapextend=config['gapextend'], endweight=config['endweight'], endopen=config['endopen'], endextend=config['endextend'], matrix=config['matrix'])
-        elapsed_align = time.perf_counter() - json_dict['time_script_start'] 
+        generate_edges(config['fasta_file'], full_graph, config['transformation'], threshold, denominator=config['denominator'], delimiter='|',
+                       is_nucleotide=config['nucleotide'], gapopen=config['gapopen'], gapextend=config['gapextend'], endweight=config['endweight'], endopen=config['endopen'], endextend=config['endextend'], matrix=config['matrix'])
+        elapsed_align = time.perf_counter() - json_dict['time_script_start']
         if verbose:
             print(f"Pairwise alignment executed in {elapsed_align:0.2f} seconds.")
 
     elif config['alignment_mode'] == 'mmseqs2needle':
-        from .mmseqs_needle_combined_utils import generate_edges_mmseqs_needle_combined
         recompute_threshold = TRANSFORMATIONS[config['transformation']](config['recompute_threshold'])
         print('Computing pairwise sequence identities.')
         generate_edges_mmseqs_needle_combined(
@@ -644,45 +610,46 @@ def make_graphs_from_sequences(config: Dict[str, Any], threshold: float, json_di
             endextend=config['endextend'],
             matrix=config['matrix']
         )
-        # generate_edges_mmseqs_needle_combined(config['fasta_file'], full_graph, config['transformation'], threshold, recompute_threshold, config['threshold'], denominator_needle=config['denominator_needle'], denominator_mmseqs=config['denominator_mmseqs'], n_procs=config['threads'], parallel_mode=config['parallel_mode'], triangular=config['triangular'], delimiter='|', 
-                                            #   is_nucleotide=config['nucleotide'], use_prefilter=config['prefilter'], gapopen=config['gapopen'], gapextend=config['gapextend'], endweight=config['endweight'], endopen=config['endopen'], endextend=config['endextend'], matrix=config['matrix'])
-
     else:
         raise NotImplementedError('Encountered unspecified alignment mode. This should never happen.')
 
-    
-    return full_graph, part_graph, labels
+    return full_graph, part_graph
 
 
-def partition_and_remove(full_graph: nx.classes.graph.Graph, part_graph: nx.classes.graph.Graph, labels: dict, json_dict: dict,
-                            threshold: float, config: dict, write_intermediate_file: bool = False, verbose: bool = True) -> pd.core.frame.DataFrame:
+def partition_and_remove_regression(full_graph: nx.classes.graph.Graph, part_graph: nx.classes.graph.Graph, json_dict: dict,
+                         threshold: float, config: dict, write_intermediate_file: bool = False, verbose: bool = True) -> pd.core.frame.DataFrame:
     '''
-    This function runs the core Graph-Part algorithm. Its inputs are generated by
-    `make_graphs_from_sequences` or another function that produces outputs of the same
-    kind for non-sequence data.
+    This function runs the core Graph-Part algorithm for regression problems. Its inputs are generated by
+    `make_graphs_from_sequences` or another function that produces outputs of the same kind for non-sequence data.
     '''
     
-    partition_data(full_graph, part_graph, labels, threshold, config['partitions'], config['initialization_mode'])
-
-    df, result = display_results(part_graph, full_graph, labels, config['partitions'], verbose=verbose)
-    if config['test_ratio']>0:
+    # Partition the data using regression-specific logic
+    partition_data_regression(full_graph, part_graph, threshold, config['partitions'], config['initialization_mode'])
+    
+    # Display initial results for regression
+    df, result = display_results_regression(part_graph, full_graph, config['partitions'], verbose=verbose)
+    
+    # Handle train, validation, and test splits if required
+    if config['test_ratio'] > 0:
         train_val_test_split(part_graph, full_graph, threshold, config['test_ratio'], config['val_ratio'], config['partitions'])
-        config['partitions'] = 3 if config['val_ratio']>0 else 2
+        config['partitions'] = 3 if config['val_ratio'] > 0 else 2
 
-    df, result = display_results(part_graph, full_graph, labels, config['partitions'], verbose=verbose)
+    # Display results after train/val/test split
+    df, result = display_results_regression(part_graph, full_graph, config['partitions'], verbose=verbose)
+    
+    # Optionally write intermediate results to a file
     if write_intermediate_file:
         df.to_csv(config['out_file'] + "pre-removal")
     print('Currently have this many samples:', full_graph.number_of_nodes())
 
+    # Update JSON dictionary with pre-removal statistics
     json_dict['partitioning_pre_removal'] = result.to_json()
     json_dict['samples_pre_removal'] = full_graph.number_of_nodes()
-    json_dict['score_pre_removal'] = score_partitioning(result[range(config['partitions'])])
+    #json_dict['score_pre_removal'] = score_partitioning(result.loc['sum'])
 
-    
-    ## Check if we need to remove any
+    # Check if removal is needed
     if removal_needed(part_graph, full_graph, threshold):     
         print('Need to remove! Currently have this many samples:', full_graph.number_of_nodes())
-
         remover(full_graph, part_graph, threshold, json_dict, config['allow_moving'], True, verbose=verbose)    
 
     if removal_needed(part_graph, full_graph, threshold):   
@@ -691,69 +658,69 @@ def partition_and_remove(full_graph: nx.classes.graph.Graph, part_graph: nx.clas
 
     print('After removal we have this many samples:', full_graph.number_of_nodes())
 
+    # Display final results for regression
+    df, result = display_results_regression(part_graph, full_graph, config['partitions'], verbose=verbose)
 
-    df, result = display_results(part_graph, full_graph, labels, config['partitions'], verbose=verbose)
-
+    # Update JSON dictionary with post-removal statistics
     json_dict['partitioning_after_removal'] = result.to_json()
     json_dict['samples_after_removal'] = full_graph.number_of_nodes()
-    json_dict['score_after_removal'] = score_partitioning(result[range(config['partitions'])])
+    #json_dict['score_after_removal'] = score_partitioning(result.loc['sum'])
 
+    # Final check for removal necessity
     if removal_needed(part_graph, full_graph, threshold):
-        print ("Something is wrong! Removal still needed!")
+        print("Something is wrong! Removal still needed!")
         json_dict['removal_needed_end'] = True
     else:
         json_dict['removal_needed_end'] = False
 
     return df
 
-
-def run_partitioning(config: Dict[str, Union[str,int,float,bool]], write_output_file: bool = True, write_json_report: bool=True, verbose: bool=True) -> pd.core.frame.DataFrame:
+def run_partitioning_regression(config: Dict[str, Union[str, int, float, bool]], write_output_file: bool = True, write_json_report: bool = True, verbose: bool = True) -> pd.core.frame.DataFrame:
     '''
-    Core Graph-Part partitioning function. `config` contains all parameters passed from the command line
+    Core Graph-Part partitioning function for regression problems. `config` contains all parameters passed from the command line
     or Python API. See `cli.py` for the definitions.  
 
     Parameters:
     -----------
     config:
-        A dictionary of all parameters needed to run graph-part
+        A dictionary of all parameters needed to run graph-part.
     write_output_file: bool
         If True, write final assignment table to disk.
     write_json_report: bool
         If True, write a report of all summary statistics. Used by the webserver.
-    verbose:  bool
+    verbose: bool
         If True, print all processing steps to command line.
     '''
 
     s = time.perf_counter()
-    # in this dict we collect everything that we want to report.
-    
+    # Initialize the JSON dictionary for reporting
     json_dict = {}
     json_dict['time_script_start'] = s
     json_dict['config'] = config
 
+    # Validate output file path
     if write_output_file:
         try:
             with open(config['out_file'], 'w+') as outf:
                 pass
         except:
             raise ValueError("Output file path (-of/--out-file) improper or nonexistent.") 
-        
+
+    # Apply the transformation to the threshold
     threshold = TRANSFORMATIONS[config['transformation']](config['threshold'])
     json_dict['config']['threshold_transformed'] = threshold
 
-
     ## Processing starts here:
 
-    ## Load entities/samples as networkx graphs. labels contains label metadata.
-    full_graph, part_graph, labels = make_graphs_from_sequences(config, threshold, json_dict, verbose)
+    # Load entities/samples as networkx graphs
+    full_graph, part_graph = make_graphs_from_sequences_regression(config, threshold, json_dict, verbose)
 
-
-    ## Let's look at the number of edges
+    # Debugging: Print the number of edges in the full graph
     print("Full graph nr. of edges:", full_graph.number_of_edges())
-
     json_dict['graph_edges_start'] = full_graph.number_of_edges()
     json_dict['time_edges_complete'] = time.perf_counter()
 
+    # Optionally save the edge list to a checkpoint file
     if config['save_checkpoint_path'] is not None:
         from .transformations import INVERSE_TRANSFORMATIONS
         from tqdm.auto import tqdm
@@ -761,29 +728,29 @@ def run_partitioning(config: Dict[str, Union[str,int,float,bool]], write_output_
         with open(config['save_checkpoint_path'], 'w') as f:
             inv_tf = INVERSE_TRANSFORMATIONS[config['transformation']]
             for qry, lib, data in tqdm(full_graph.edges(data=True)):
-                # we save the original metric. not the one that we transformed. So revert transformation.
+                # Save the original metric (reverting the transformation)
                 score = inv_tf(data['metric'])
-                f.write(qry+ ',' + lib +',' + str(score) +'\n')
+                f.write(qry + ',' + lib + ',' + str(score) + '\n')
 
+    # Partition the graph and remove problematic nodes
+    df = partition_and_remove_regression(full_graph, part_graph, json_dict, threshold, config, write_intermediate_file=False, verbose=verbose)
 
-    
-    ## Finally, let's partition this
-    df = partition_and_remove(full_graph, part_graph, labels, json_dict, threshold, config, write_intermediate_file=False, verbose=verbose)
-
-    ## clustering to outfile. This will probably change...
+    # Save the final clustering to the output file
     if write_output_file:
         df.to_csv(config['out_file'])
 
+    # Record the elapsed time
     elapsed = time.perf_counter() - s
     json_dict['time_script_complete'] = time.perf_counter()
 
+    # Print execution time if verbose
     if verbose:
         print(f"Graph-Part executed in {elapsed:0.2f} seconds.")
 
+    # Optionally write the JSON report
     if write_json_report:
         import json
         import os
-        json.dump(json_dict, open(os.path.splitext(config['out_file'])[0]+'_report.json','w'))
-
+        json.dump(json_dict, open(os.path.splitext(config['out_file'])[0] + '_report.json', 'w'))
 
     return df
