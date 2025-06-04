@@ -16,17 +16,20 @@ Preprint: https://www.biorxiv.org/content/10.1101/2023.04.14.536886v1
 
 ## 🔧 Modifications in this fork made by me
 
-This fork includes several modifications to the original code developed by the authors of the preprint above, with the goal of improving the quality and usability of the train/test splits:
+This fork includes several modifications to the original code developed by the authors of the preprint above, with the goal of improving the quality and usability of the train/test splits, **now specifically adapted for regression problems** (continuous targets), not just binary or multiclass classification:
 
-- **Better class balance** across sets.
-- **Enforced sequence identity threshold** between datasets (e.g., between training and test sets), ensuring minimal homology.
+- **Better balance of target value distributions across sets:**  
+  Partitions are constructed to ensure that the distribution of the continuous regression target (e.g., stability, activity, etc.) is as similar as possible between sets, using quantile-based binning and sum balancing.
+- **Enforced sequence identity threshold** between datasets (e.g., between training and test sets), ensuring minimal homology and reducing data leakage.
 - **Increased intra-set diversity**, which may enhance model generalization and learning performance.
+- **Support for regression-specific partitioning:**  
+  The partitioning algorithm now considers both the distribution of discretized target bins and the total sum of target values per partition, aiming for fair and representative splits for regression tasks.
 
-These changes aim to generate more realistic and challenging sets for machine learning tasks involving biological sequences.
+These changes aim to generate more realistic and challenging sets for machine learning tasks involving biological sequences with continuous labels.
 
 ## 📊 Upcoming comparison with original results
 
-In the next 7 days, I plan to run a comparative evaluation between this modified version and the original method described in the preprint. The results and main differences will be summarized and shared in a Jupyter Notebook within this repository.
+In the next 7 days, I plan to run a comparative evaluation between this modified version (with regression-aware partitioning) and the original method described in the preprint. The results and main differences will be summarized and shared in a Jupyter Notebook within this repository.
 
 ## Installation
 
